@@ -1,40 +1,45 @@
-use termios::*;
 use std::io::*;
+use termios::*;
+use nix::sys::select::*;
 
-pub fn game_settings() -> Termios
-{
-	let stdin_fd = 0; // TODO: how can I get it from here std::io::stdin()
-	// let stdout_fd = 0;
+pub fn game_settings() -> Termios {
+    let stdin_fd = 0; // TODO: how can I get it from here std::io::stdin()
+                      // let stdout_fd = 0;
 
-	let mut settings = Termios::from_fd(stdin_fd).unwrap();
-	let old_settings = settings;
+    let mut settings = Termios::from_fd(stdin_fd).unwrap();
+    let old_settings = settings;
 
-	// tcgetattr(STDIN_FILENO, old_settings);
-	settings.c_lflag &= !ECHO;
-	settings.c_lflag &= !ICANON;
-	tcsetattr(stdin_fd, TCSANOW, &mut settings).expect("Could not apply terminal settings");
+    // tcgetattr(STDIN_FILENO, old_settings);
+    settings.c_lflag &= !ECHO;
+    settings.c_lflag &= !ICANON;
+    tcsetattr(stdin_fd, TCSANOW, &mut settings).expect("Could not apply terminal settings");
 
-	// Hide cursor
-	// fputs("\033[?25l", stdout_fd);
-	std::io::stdout().lock().write(b"\033[?25l").expect("should write");
+    // Hide cursor
+    // fputs("\x1b[?25l", stdout_fd);
+    std::io::stdout()
+        .lock()
+        .write(b"\x1b[?25l")
+        .expect("should write");
 
-	old_settings
+    old_settings
 }
 
-pub fn restore_settings(old_settings: &mut Termios)
-{
-	let stdin_fd = 0;
-	tcsetattr(stdin_fd, TCSANOW, old_settings).expect("Could not apply terminal settings");
-	// fputs("\033[?25h", stderr);
-	std::io::stdout().lock().write(b"\033[?25h").expect("should write");
+pub fn restore_settings(old_settings: &mut Termios) {
+    let stdin_fd = 0;
+    tcsetattr(stdin_fd, TCSANOW, old_settings).expect("Could not apply terminal settings");
+   
+    // Unhide cursor
+    std::io::stdout()
+        .lock()
+        .write(b"\x1b[?25h")
+        .expect("should write");
 }
 
-pub fn term_width() -> i32
-{
-	let info = terminfo::Database::from_env().unwrap();
-	let cols : i32 = info.get::<terminfo::capability::Columns>().unwrap().into();
+pub fn term_width() -> i32 {
+    let info = terminfo::Database::from_env().unwrap();
+    let cols: i32 = info.get::<terminfo::capability::Columns>().unwrap().into();
 
-	return cols;
+    return cols;
 }
 
 /**
@@ -42,36 +47,52 @@ pub fn term_width() -> i32
  *
  * @return     height in rows, -1 if the value cannot be retrieved
  */
-pub fn term_height() -> i32
-{
-	let info = terminfo::Database::from_env().unwrap();
-	let rows : i32 = info.get::<terminfo::capability::Lines>().unwrap().into();
+pub fn term_height() -> i32 {
+    let info = terminfo::Database::from_env().unwrap();
+    let rows: i32 = info.get::<terminfo::capability::Lines>().unwrap().into();
 
-	return rows;
+    return rows;
 }
 
-pub fn get_key() -> i32
-{
-	let mut key_buf : [u8;1] = [0];
+pub fn get_key() -> i32 {
+    let mut key_buf: [u8; 1] = [0];
 
+    // TODO: this really sucks, but it seems to be the most concise way to clear out
+    // the buffered input in stdin in the rust standard library
+    let mut br = std::io::BufReader::new(std::io::stdin());
+    br.consume(128);
 
-	let mut read_fds = nix::sys::select::FdSet::new();
-	let mut time_out = nix::sys::time::TimeVal::new(1, 0);//nix::sys::time::TimeValLike::seconds(1);
-	// let mut time_out : nix::sys::time::TimeVal = nix::sys::time::TimeValLike::microseconds(33333);
-	read_fds.insert(0);
-	let _ = nix::sys::select::select(1, &mut read_fds, None, None, &mut time_out);
-	for fd in read_fds.fds(None) {
-		if fd == 0 {
-			println!("stdin");
-			let _ = std::io::stdin().read(&mut key_buf[..]);
+    let mut read_fds = FdSet::new();
+    let mut time_out = nix::sys::time::TimeVal::new(0, 33333);
 
-			let remaining_us = time_out.tv_usec();
-			let duration = std::time::Duration::from_micros(remaining_us.try_into().unwrap());
-			// std::thread::sleep(duration);
+    read_fds.insert(0);
+    let _ = select(1, &mut read_fds, None, None, &mut time_out);
+    for fd in read_fds.fds(None) {
+        if fd == 0 {
+            let _ = std::io::stdin().read(&mut key_buf[..]);
 
-			return key_buf[0].into();
-		}
-	}
+            let remaining_us = time_out.tv_usec();
+            let duration = std::time::Duration::from_micros(remaining_us.try_into().unwrap());
+            std::thread::sleep(duration);
 
-	-1
+            return key_buf[0].into();
+        }
+    }
+
+    -1
+}
+
+pub fn clear(rows: u32) {
+    print!("\x1b[{rows}A");
+}
+
+type Sampler = fn(row: u32, col: u32) -> String;
+
+pub fn rasterize(sampler: Sampler, start_r: u32, start_c: u32, end_r: u32, end_c: u32) {
+    for r in start_r..=end_r {
+        for c in start_c..=end_c {
+            let glyph = sampler(r, c);
+            print!("{glyph}");
+        }
+    }
 }

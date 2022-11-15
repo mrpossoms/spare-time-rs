@@ -7,5 +7,6 @@ edition = "2021"
 
 [dependencies]
 nix = "0.25.0"
+signal-hook = "0.3.14"
 terminfo = "0.7.3"
 termios = "0.3.3"
